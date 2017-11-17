@@ -1,10 +1,11 @@
 {
   "scripts": {
     "start": "node dist",
-      "build": "babel --out-dir dist src"
+    "build": "babel --out-dir dist src"
   },
   "dependencies": {
-    "bytearena-sdk": "0.0.13"
+    "bytearena-sdk": "0.0.14",
+    "sparkly": "3.1.2"
   },
   "babel": {
     "presets": [
