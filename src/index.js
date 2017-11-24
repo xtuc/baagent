@@ -1,54 +1,28 @@
 import {vector, comm} from 'bytearena-sdk';
-import process from 'process';
+import {computeAvoidanceForces} from './avoidance';
+import {computeAgentSeekingForces} from './agent-seeking';
+import {computeShootForce} from './shoot';
+import {CLOSE_DISTANCE} from './config';
 
 const Vector2 = vector.Vector2;
 const agent = comm.connect();
 
-const forwardVector = new Vector2(0, 1);
+const getNullVector = () => new Vector2(0, 0);
+const getForwardVector = () => new Vector2(0, 1);
+const addVectors = (a, b) => a.add(b);
+const mergeVectors = vs => vs.reduce(addVectors, getNullVector());
 
-const CLOSE_DISTANCE = 10;
-
-let specs = null;
-
-agent.on('welcome', welcome => {
-  specs = welcome;
-})
-
-agent.on('perception', perception => {
-  const force = forwardVector.clone()
-  const currentVelocity = Vector2.fromArray(perception.velocity);
-
-  const avoidanceForceArray = computeAvoidanceForces(perception);
-  const avoidanceForce = mergeVectors(avoidanceForceArray);
-
-  avoidanceForce
-    .sub(currentVelocity);
-
-  force
-    .add(avoidanceForce)
-    .mag(specs.maxsteeringforce);
-
-  assert(Number.isNaN(force.x) === false)
-  assert(Number.isNaN(force.y) === false)
-
-  agent.takeActions([
-    { method: 'steer', arguments: force.toArray(5) }
-  ]);
+const clonePerception = ({vision}) => ({
+  vision: vision.slice(0),
 });
 
-function computeAvoidanceForces({vision}) {
+let lastVector = new Vector2(0, 0);
+let specs = null;
 
-  return vision
-    .filter(isObjectable)
-    .map(obj => {
-      const centervec = Vector2.fromArray(obj.center);
+function arrive(v) {
+  const mag = map(v.mag(), 0, CLOSE_DISTANCE, 0, specs.maxsteeringforce);
 
-      if (isClose(centervec)) {
-        return inverseVector(centervec);
-      } else {
-        return getNullVector();
-      }
-    });
+  return v.clone().mag(mag)
 }
 
 function assert(cond) {
@@ -57,9 +31,62 @@ function assert(cond) {
   }
 }
 
-const isObjectable = x => x.tag === 'obstacle';
-const inverseVector = x => x.mult(-1);
-const getNullVector = () => new Vector2(0, 0).clone();
-const addVectors = (a, b) => a.add(b);
-const mergeVectors = vs => vs.reduce(addVectors, getNullVector());
-const isClose = v => v.mag() < CLOSE_DISTANCE;
+function map(value, inMin, inMax, outMin, outMax) {
+  return (value - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
+}
+
+agent.on('welcome', x => (specs = x));
+
+agent.on('perception', perception => {
+  const actions = [];
+  const force = getForwardVector();
+  const currentVelocity = Vector2.fromArray(perception.velocity);
+
+  const avoidanceForceArray = computeAvoidanceForces(clonePerception(perception));
+
+  if (avoidanceForceArray.length > 0) {
+    const avoidanceForce = mergeVectors(avoidanceForceArray);
+
+    /*
+     * It seems that some walls are flickering
+     * to mitigate that we add the vector with the vector at n-1
+     */
+    avoidanceForce.add(lastVector)
+
+    lastVector = avoidanceForce
+
+    force.add(avoidanceForce);
+  }
+
+  const agentSeekingForceArray = computeAgentSeekingForces(clonePerception(perception));
+
+  if (agentSeekingForceArray.length > 0) {
+    const seekingForce = mergeVectors(agentSeekingForceArray);
+
+    seekingForce.mult(1000);
+
+    force.add(seekingForce);
+  }
+
+  force.mag(specs.maxsteeringforce);
+
+  assert(Number.isNaN(force.x) === false);
+  assert(Number.isNaN(force.y) === false);
+
+  const shootForces = computeShootForce(clonePerception(perception));
+
+  if (shootForces.length > 0) {
+
+    actions.push({
+      method: 'shoot',
+      arguments: shootForces[0].toArray(5),
+    });
+  }
+
+  actions.push({
+    method: 'steer',
+    arguments: force.toArray(5)
+  });
+
+  agent.takeActions(actions);
+});
